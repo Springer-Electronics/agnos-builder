@@ -8,6 +8,18 @@ HOST=comma
 touch /TICI
 touch /AGNOS
 
+# Add armhf as supported architecture
+dpkg --add-architecture armhf
+
+# Install apt-fast
+apt-get update
+apt-get install -yq curl sudo wget
+bash -c "$(curl -sL https://git.io/vokNn)"
+
+# Install packages
+export DEBIAN_FRONTEND=noninteractive
+apt-fast install --no-install-recommends -yq locales systemd adduser
+
 # Create privileged user
 useradd -G sudo -m -s /bin/bash $USERNAME
 echo "$USERNAME:$PASSWD" | chpasswd
@@ -21,14 +33,6 @@ adduser $USERNAME gpu
 adduser $USERNAME audio
 adduser $USERNAME disk
 adduser $USERNAME dialout
-
-# Add armhf as supported architecture
-dpkg --add-architecture armhf
-
-# Install packages
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -yq locales systemd
 adduser $USERNAME systemd-journal
 
 # Enable serial console on UART
@@ -46,15 +50,14 @@ echo "comma - nice -10" >> /etc/security/limits.conf
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8
 
-apt-get upgrade -yq
-apt-get install --no-install-recommends -yq \
+apt-fast upgrade -yq
+apt-fast install --no-install-recommends -yq \
     alsa-utils \
     apport-retrace \
     bc \
     build-essential \
     bzip2 \
     curl \
-    chrony \
     cpuset \
     dfu-util \
     evtest \
@@ -73,6 +76,7 @@ apt-get install --no-install-recommends -yq \
     libqmi-utils \
     libtool \
     libncursesw5-dev \
+    libnss-myhostname \
     libgdbm-dev \
     libc6-dev \
     libsqlite3-dev \
@@ -85,13 +89,14 @@ apt-get install --no-install-recommends -yq \
     network-manager \
     nvme-cli \
     openssl \
-    python-dev \
-    python-setuptools \
+    ppp \
     smartmontools \
     speedtest-cli \
     ssh \
     sshfs \
     sudo \
+    systemd-resolved \
+    systemd-timesyncd \
     traceroute \
     tk-dev \
     ubuntu-minimal \
@@ -105,15 +110,9 @@ apt-get install --no-install-recommends -yq \
 
 rm -rf /var/lib/apt/lists/*
 
-# Allow chrony to make a big adjustment to system time on boot
-echo "makestep 0.1 3" >> /etc/chrony/chrony.conf
-
 # Create dirs
 mkdir /data && chown $USERNAME:$USERNAME /data
 mkdir /persist && chown $USERNAME:$USERNAME /persist
-
-# Disable automatic ondemand switching from ubuntu
-systemctl disable ondemand
 
 # Disable pstore service that moves files out of /sys/fs/pstore
 systemctl disable systemd-pstore.service
@@ -124,16 +123,11 @@ echo "comma ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 # setup /bin/sh symlink
 ln -sf /bin/bash /bin/sh
 
-# Add bionic repo to sources
-echo "" >> /etc/apt/sources.list
-echo "deb http://ports.ubuntu.com/ubuntu-ports/ bionic main restricted" >> /etc/apt/sources.list
-echo "deb http://ports.ubuntu.com/ubuntu-ports/ bionic universe" >> /etc/apt/sources.list
-
 # Install necessary libs
-apt-get update -yq
-apt-get install --no-install-recommends -yq \
+apt-fast update -yq
+apt-fast install --no-install-recommends -yq \
     libacl1:armhf \
-    libasan2-armhf-cross \
+    libasan6-armhf-cross \
     libatomic1-armhf-cross \
     libattr1:armhf \
     libaudit1:armhf \
@@ -147,13 +141,12 @@ apt-get install --no-install-recommends -yq \
     libdrm2:armhf \
     libevdev2:armhf \
     libexpat1:armhf \
-    libffi6:armhf \
+    libffi8:armhf \
     libfontconfig1:armhf \
     libfreetype6:armhf \
     libgbm1:armhf \
-    libgcc-5-dev-armhf-cross \
-    libgcc1:armhf \
-    libglib2.0-0:armhf \
+    libgcc-11-dev-armhf-cross \
+    libglib2.0-0t64:armhf \
     libgomp1-armhf-cross \
     libgudev-1.0-0:armhf \
     libinput-bin:armhf \
@@ -165,23 +158,20 @@ apt-get install --no-install-recommends -yq \
     libjpeg8:armhf \
     libjpeg8-dev:armhf \
     libkmod2:armhf \
-    libmtdev1:armhf \
+    libmtdev1t64:armhf \
     libpam0g:armhf \
     libpam0g-dev:armhf \
     libpcre3:armhf \
     libpixman-1-0:armhf \
-    libpng16-16:armhf \
+    libpng16-16t64:armhf \
     libselinux1:armhf \
     libstdc++6:armhf \
     libstdc++6-armhf-cross \
-    libubsan0-armhf-cross \
+    libubsan1-armhf-cross \
     libudev-dev:armhf \
     libudev1:armhf \
     libuuid1:armhf \
-    libwacom2:armhf \
-    libwayland-client0:armhf \
-    libwayland-cursor0:armhf \
-    libwayland-server0:armhf \
+    libwacom9:armhf \
     libx11-6:armhf \
     libxau6:armhf \
     libxcb-render0:armhf \
@@ -199,9 +189,6 @@ apt-get install --no-install-recommends -yq \
     libgles1 \
     libgles2 \
     libgles-dev \
-    libwayland-dev \
-    pulseaudio \
-    pulseaudio-utils \
     openssh-server \
     dnsmasq-base \
     isc-dhcp-client \
@@ -211,5 +198,4 @@ apt-get install --no-install-recommends -yq \
     wpasupplicant \
     hostapd \
     libgtk2.0-dev \
-    libcap2:armhf \
     libxml2:armhf \

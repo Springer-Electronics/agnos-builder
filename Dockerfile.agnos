@@ -1,12 +1,60 @@
+# check=error=true
+
+# ################## #
+# ### Package  ##### #
+# ### Compilation ## #
+# ################## #
+FROM ubuntu:24.04 AS agnos-compiler
+
+# Common packages
+RUN apt-get update && apt-get install -yq --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    ccache \
+    clang \
+    curl \
+    checkinstall \
+    git \
+    pkg-config \
+    wget
+
+# Enable ccache
+ENV PATH="/usr/lib/ccache:$PATH"
+
+# capnproto
+FROM agnos-compiler AS agnos-compiler-capnp
+COPY ./userspace/compile-capnp.sh /tmp/agnos/
+RUN --mount=type=cache,target=/root/.ccache,id=capnp,sharing=shared \
+    /tmp/agnos/compile-capnp.sh
+
+# ffmpeg
+FROM agnos-compiler AS agnos-compiler-ffmpeg
+COPY ./userspace/compile-ffmpeg.sh /tmp/agnos/
+RUN --mount=type=cache,target=/root/.ccache,id=ffmpeg,sharing=shared \
+    /tmp/agnos/compile-ffmpeg.sh
+
+# ModemManager
+FROM agnos-compiler AS agnos-compiler-modemmanager
+COPY ./userspace/compile-modemmanager.sh /tmp/agnos/
+RUN --mount=type=cache,target=/root/.ccache,id=modemmanager,sharing=shared \
+    /tmp/agnos/compile-modemmanager.sh
+
+# qtwayland5
+FROM agnos-compiler AS agnos-compiler-qtwayland5
+COPY ./userspace/qtwayland/*.deb /tmp/agnos/
+COPY ./userspace/compile-qtwayland5.sh /tmp/agnos/
+COPY ./userspace/qtwayland/patch* /tmp/agnos/
+RUN --mount=type=cache,target=/root/.ccache,id=qtwayland5,sharing=shared \
+    /tmp/agnos/compile-qtwayland5.sh
+
 # ################## #
 # ###### Base ###### #
 # ################## #
 FROM scratch AS agnos-base
-ADD ubuntu-base-20.04.1-base-arm64.tar.gz /
 
-# Add aarch64 and arm support
-COPY --from=multiarch/qemu-user-static:x86_64-aarch64 /usr/bin/qemu-aarch64-static /usr/bin
-COPY --from=multiarch/qemu-user-static:x86_64-arm /usr/bin/qemu-arm-static /usr/bin
+# Add Ubuntu Base image files
+ARG UBUNTU_BASE_IMAGE
+ADD ${UBUNTU_BASE_IMAGE} /
 
 # Build folder
 RUN mkdir -p /tmp/agnos
@@ -14,38 +62,27 @@ RUN mkdir -p /tmp/agnos
 # Stop on error
 RUN set -xe
 
-ENV USERNAME=comma
-ENV PASSWD=comma
-ENV HOST=comma
+ARG USERNAME=comma
 
 # Base system setup
 RUN echo "resolvconf resolvconf/linkify-resolvconf boolean false" | debconf-set-selections
 COPY ./userspace/base_setup.sh /tmp/agnos
 RUN /tmp/agnos/base_setup.sh
 
-# ################## #
-# #### Compiler #### #
-# ################## #
-FROM agnos-base as agnos-compiler
-
-RUN apt-get update && apt-get install --no-install-recommends checkinstall
-# Install openpilot dependencies, probably needed for build,
-# but we don't want these in the base image
+# Install openpilot dependencies
 COPY ./userspace/openpilot_dependencies.sh /tmp/agnos/
 RUN /tmp/agnos/openpilot_dependencies.sh
+COPY ./userspace/openpilot_python_dependencies.sh /tmp/agnos/
+RUN /tmp/agnos/openpilot_python_dependencies.sh
 
-# Individual compiling images
-FROM agnos-compiler as agnos-compiler-capnp
-COPY ./userspace/compile-capnp.sh /tmp/agnos/
-RUN /tmp/agnos/compile-capnp.sh
-
-FROM agnos-compiler as agnos-compiler-ffmpeg
-COPY ./userspace/compile-ffmpeg.sh /tmp/agnos/
-RUN /tmp/agnos/compile-ffmpeg.sh
-
-FROM agnos-compiler as agnos-compiler-mapbox-gl-native
-COPY ./userspace/compile-mapbox-gl-native.sh /tmp/agnos/
-RUN /tmp/agnos/compile-mapbox-gl-native.sh
+# Install old Qt 5.12.8, libwayland 1.9.0-1 and deps
+COPY ./userspace/qtwayland/*.deb /tmp/agnos/
+RUN apt-get -o Dpkg::Options::="--force-overwrite" install -yq \
+    /tmp/agnos/qt-5.12.8.deb \
+    /tmp/agnos/libwayland-1.9.0-1.deb \
+    /tmp/agnos/libicu66_66.1-2ubuntu2.1_arm64.deb \
+    /tmp/agnos/libssl1.1_1.1.1f-1ubuntu2.22_arm64.deb \
+    /tmp/agnos/libffi6_3.2.1-8_arm64.deb
 
 # ################### #
 # ###### AGNOS ###### #
@@ -59,60 +96,57 @@ COPY ./userspace/hardware_setup.sh /tmp/agnos
 RUN /tmp/agnos/hardware_setup.sh
 RUN mv /data/persist /system/ && rm -rf /data/*
 
-# Build ModemManager
-COPY ./userspace/compile-modemmanager.sh /tmp/agnos/
-RUN /tmp/agnos/compile-modemmanager.sh
+# Pre-compiled libqmi and modemmanager
+COPY --from=agnos-compiler-modemmanager /tmp/libqmi.deb /tmp/modemmanager.deb /tmp/
+RUN cd /tmp && \
+    apt-get update && \
+    apt-get install -yq --no-install-recommends \
+    gir1.2-qmi-1.0 \
+    libglib2.0-dev \
+    libqmi-glib5 \
+    libc6 \
+    libglib2.0-0t64 \
+    libgudev-1.0-0 \
+    libmm-glib0 \
+    libpolkit-gobject-1-0 \
+    libsystemd0 \
+    polkitd \
+    polkitd-pkla \
+    mobile-broadband-provider-info && \
+    apt-get -o Dpkg::Options::="--force-overwrite" install -yq ./libqmi.deb && \
+    apt-get -o Dpkg::Options::="--force-overwrite" install -yq ./modemmanager.deb
 
 # Pre-compiled capnp (must be before python install)
 COPY --from=agnos-compiler-capnp /tmp/capnproto.deb /tmp/capnproto.deb
 RUN cd /tmp && apt-get -o Dpkg::Options::="--force-overwrite" install -yq ./capnproto.deb
 
-# Install openpilot dependencies
-COPY ./userspace/openpilot_dependencies.sh /tmp/agnos/
-RUN /tmp/agnos/openpilot_dependencies.sh
-COPY ./userspace/openpilot_python_dependencies.sh /tmp/agnos/
-RUN /tmp/agnos/openpilot_python_dependencies.sh
-
 # Use other pre-compiled packages
 COPY --from=agnos-compiler-ffmpeg /tmp/ffmpeg.deb /tmp/ffmpeg.deb
 RUN cd /tmp && apt-get -o Dpkg::Options::="--force-overwrite" install -yq ./ffmpeg.deb
-COPY --from=agnos-compiler-mapbox-gl-native /tmp/libqmapboxgl.so /lib/aarch64-linux-gnu/libqmapboxgl.so
 
-RUN export PATH="/usr/local/pyenv/bin:/usr/local/pyenv/shims:$PATH" && \
-    export PYENV_ROOT="/usr/local/pyenv" && \
-    eval "$(pyenv init -)" && \
-    eval "$(pyenv virtualenv-init -)" && \
-    export MAKEFLAGS="-j40" && \
-    pip install pyqt5-sip==12.12.1 && \
-    pip install pyqt5==5.15.9 --verbose --config-settings --confirm-license= && \
-    pyenv rehash
+ARG XDG_DATA_HOME="/usr/local"
+ARG PATH="$XDG_DATA_HOME/.cargo/bin:$PATH"
 
 # Install openpilot python packages
-COPY ./userspace/pyproject.toml ./userspace/poetry.lock /tmp/agnos/
-RUN export PATH="/usr/local/pyenv/bin:/usr/local/pyenv/shims:$PATH" && \
-    export PYENV_ROOT="/usr/local/pyenv" && \
-    eval "$(pyenv init -)" && \
-    eval "$(pyenv virtualenv-init -)" && \
-    cd /tmp/agnos && \
-    poetry config virtualenvs.prefer-active-python true --local && \
-    poetry config virtualenvs.create false --local && \
+COPY ./userspace/uv /tmp/agnos/uv
+RUN source $XDG_DATA_HOME/venv/bin/activate && \
+    cd /tmp/agnos/uv && \
     export PYOPENCL_CL_PRETEND_VERSION="2.0" && \
-    export POETRY_VIRTUALENVS_CREATE=false && \
-    MAKEFLAGS="-j$(nproc)" poetry install --no-cache --no-root && \
-    pyenv rehash
+    pc="$(python -c "import sysconfig;print(sysconfig.get_config_vars('installed_base')[0])")" && \
+    pcpath=$pc"/lib/pkgconfig" && \
+    export PKG_CONFIG_PATH="$pcpath:$PKG_CONFIG_PATH" && \
+    pypcpath=$pcpath"/python-3.12.pc" && \
+    sed -i 's|prefix=/install|prefix='$pc'|' $pypcpath && \
+    pypcpathembed=$pcpath"/python-3.12-embed.pc" && \
+    sed -i 's|prefix=/install|prefix='$pc'|' $pypcpathembed && \
+    MAKEFLAGS="-j$(nproc)" UV_NO_CACHE=1 UV_PROJECT_ENVIRONMENT=$XDG_DATA_HOME/venv uv sync --frozen --inexact --compile-bytecode
 
 # Install nice to haves
 COPY ./userspace/install_extras.sh /tmp/agnos/
 RUN /tmp/agnos/install_extras.sh
 
-# 16.04 libwayland-client + libffi6
-COPY ./userspace/qtwayland/libffi.so.6 /lib/aarch64-linux-gnu/
-COPY ./userspace/qtwayland/libwayland-client.so.0 /lib/aarch64-linux-gnu/libwayland-client.so.0
-
-# Patched qtwayland that does not use EGL EXT, and outputs a fixed screen size
-# Clone qtwayland submodule, checkout 5.12.9 (5.12.8 leaks timers, see https://bugreports.qt.io/browse/QTBUG-82914), apply patch, qmake, make
-COPY ./userspace/qtwayland/libqwayland-egl.so /lib/aarch64-linux-gnu/qt5/plugins/platforms/libqwayland-egl.so
-COPY ./userspace/qtwayland/libQt5WaylandClient.so.5.12.8 /lib/aarch64-linux-gnu/libQt5WaylandClient.so.5.12.8
+COPY --from=agnos-compiler-qtwayland5 /tmp/qtwayland5.deb /tmp/qtwayland5.deb
+RUN cd /tmp && apt-get -o Dpkg::Options::="--force-overwrite" install -yq --allow-downgrades ./qtwayland5.deb
 
 # Patched libeglSubDriverWayland with fixed nullptr deref in CommitBuffer
 COPY ./userspace/files/libeglSubDriverWayland.so.patched /lib/aarch64-linux-gnu/libeglSubDriverWayland.so
@@ -126,35 +160,27 @@ COPY ./userspace/files/*.path /lib/systemd/system/
 COPY ./userspace/files/*.mount /lib/systemd/system/
 COPY ./userspace/files/*.service /lib/systemd/system/
 COPY ./userspace/files/*.timer /lib/systemd/system/
+COPY ./userspace/files/serial-getty@ttyMSM0_override.conf /lib/systemd/system/serial-getty@ttyMSM0.service.d/serial-getty@ttyMSM0_override.conf
 COPY ./userspace/files/ssh_override.conf /lib/systemd/system/ssh.service.d/override.conf
 COPY ./userspace/firmware/* /lib/firmware/
 
 # populate /etc
 COPY ./userspace/files/fstab /etc
 COPY ./userspace/files/profile /etc/profile
-COPY ./userspace/files/ethernet.yaml /etc/netplan/
+COPY ./userspace/files/01-network-manager-all.yaml /etc/netplan/
 COPY ./userspace/files/allow-network-control.pkla /etc/polkit-1/localauthority/50-local.d/allow-network-control.pkla
 COPY ./userspace/files/allow-modem-control.pkla /etc/polkit-1/localauthority/50-local.d/allow-modem-control.pkla
 COPY ./userspace/files/*.rules /etc/udev/rules.d/
-COPY ./userspace/files/default.pa /etc/pulse/default.pa
 COPY ./userspace/files/ssh*_config /etc/ssh/
 COPY ./userspace/files/logrotate.conf /etc/
 RUN chmod 644 /etc/logrotate.conf
+RUN touch -r /lib/systemd/systemd /etc/fstab
 
 # populate /usr
 COPY ./userspace/usr/comma/ /usr/$USERNAME/
 COPY ./userspace/usr/share/fonts/* /usr/share/fonts/
 COPY ./userspace/libs/* /usr/lib/aarch64-linux-gnu/
 COPY ./userspace/libs32/* /usr/lib/arm-linux-gnueabihf/
-
-# copy of panda python lib
-RUN cd /tmp/ && \
-    git clone https://github.com/commaai/panda.git && \
-    cd panda && \
-    git fetch --all && \
-    git checkout dd78b2bf6c9d63ef59e81d0c400e85c8b477a8be && \
-    mkdir /usr/comma/panda/ && \
-    mv __init__.py python/ /usr/comma/panda/
 
 # kernel headers for the AGNOS kernel (built on device)
 COPY ./userspace/files/linux-headers-4.9.103+_4.9.103+-1_arm64.deb /tmp/
@@ -199,11 +225,19 @@ RUN systemctl enable ModemManager
 # Add more T-Mobile networks to mobile-broadband-provider-info (do we still need the package?)
 COPY ./userspace/files/serviceproviders.xml /usr/share/mobile-broadband-provider-info/serviceproviders.xml
 
+# Copy extra FW, rest comes from debs
+COPY ./userspace/files/CAMERA_ICP.elf /usr/lib/firmware
+
+# Setup hostname resolution for our custom hostname
+RUN sed -i 's/hosts:          files dns myhostname/hosts:          files myhostname dns/g' /etc/nsswitch.conf
+
 # TODO: move this to base_setup.sh or build gcc from source
-# Remove unused architectures from arm-none-eabi
-RUN cd /usr/lib/gcc/arm-none-eabi/9.2.1 && \
+# Remove unused architectures & bins from arm-none-eabi
+RUN cd /usr/lib/gcc/arm-none-eabi/* && \
     rm -rf arm/ && \
-    rm -rf thumb/nofp thumb/v6* thumb/v8* thumb/v7+fp thumb/v7-r+fp.sp
+    find thumb/ -maxdepth 1 -type d ! \( -name 'thumb' -o -name 'v7e-m+fp' -o -name 'v7e-m+dp' \) -exec rm -rf {} + && \
+    rm cc1plus g++-mapper-server && \
+    find /usr/bin -maxdepth 1 -type f -name 'arm-none-eabi-*' ! \( -name 'arm-none-eabi-gcc' -o -name 'arm-none-eabi-objcopy' -o -name 'arm-none-eabi-objdump' \) -delete
 
 # keep this last
 RUN ldconfig
@@ -217,8 +251,8 @@ RUN /tmptmp/readonly_setup.sh && rm -rf /tmptmp
 # copy at the end, after all apt usage
 COPY ./userspace/files/apt.conf /etc/apt/apt.conf
 
-# Write version file
-RUN echo -n "8.2" > /VERSION
+# copy version file
+COPY VERSION /VERSION
 
 # ################## #
 # #### Cleaunup #### #
@@ -228,5 +262,4 @@ RUN rm -rf /usr/share/icons/* && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /home/$USERNAME/.cache && \
     rm -rf /root/.cache && \
-    pyclean /usr && \
     apt-get clean

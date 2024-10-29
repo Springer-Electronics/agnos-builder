@@ -1,0 +1,92 @@
+name: build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.run_id || github.head_ref || github.ref }}-${{ github.workflow }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build kernel and system
+    runs-on: namespace-profile-arm64-8x16-2004-caching
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        lfs: true
+        submodules: true
+
+    - name: Get commit message
+      run: |
+        {
+          echo 'LAST_COMMIT_MESSAGE<<EOF'
+          if [ "${{ github.event_name }}" == "push" ]; then
+            echo "${{ github.event.head_commit.message }}"
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            COMMIT_URL=$(echo "${{ github.event.repository.commits_url }}" | sed "s|{/sha}|/${{ github.sha }}|")
+            echo "$(curl -s "$COMMIT_URL" | jq -r '.commit.message')"
+          elif [ "${{ github.event_name }}" == "pull_request" ]; then
+            PR_COMMIT_URL=$(echo "${{ github.event.repository.commits_url }}" | sed "s|{/sha}|/${{ github.event.pull_request.head.sha }}|")
+            echo "$(curl -s "$PR_COMMIT_URL" | jq -r '.commit.message')"
+          fi
+          echo EOF
+        } | tee -a $GITHUB_ENV
+
+    - name: Get kernel submodule ref
+      id: kernel-submodule
+      run: echo "ref=$(git ls-tree HEAD | awk '$4 == "agnos-kernel-sdm845"' | awk '{print $3}')" | tee -a $GITHUB_OUTPUT
+
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@c92f40bee50034e84c763e33b317c77adaa81c92
+      with:
+        key: kernel-${{ steps.kernel-submodule.outputs.ref }}
+        restore-keys: kernel-
+
+    - name: Build kernel
+      run: ./build_kernel.sh
+
+    - name: Update VERSION
+      if: github.event_name == 'pull_request'
+      run: |
+        echo -n $(cat VERSION)-$(echo ${{ github.event.pull_request.head.sha }} | cut -c1-7) > VERSION
+
+    - name: Build system
+      env:
+        GIT_HASH: ${{ github.event.pull_request.head.sha }}
+      run: ./build_system.sh
+
+    - name: Statistics
+      id: stats
+      run: |
+        {
+          echo 'stats_summary<<EOF'
+          scripts/analyze-agnos-rootfs.sh
+          echo EOF
+        } | tee -a $GITHUB_OUTPUT
+
+    - name: Package and OTA push
+      if: "contains(env.LAST_COMMIT_MESSAGE, '[upload]')"
+      env:
+        AGNOS_UPDATE_URL: https://gitlab.com/commaai/ci-artifacts/-/raw/agnos-builder/pr-${{ github.event.number }}
+      run: |
+        scripts/package_ota.py
+
+    - name: Save PR number, VERSION and stats
+      if: "contains(env.LAST_COMMIT_MESSAGE, '[upload]')"
+      run: |
+        echo ${{ github.event.number }} > output/ota/PR
+        cp VERSION output/ota
+        echo "${{ steps.stats.outputs.stats_summary }}" > output/ota/agnos_stats.txt
+
+    - name: Upload artifacts
+      if: "contains(env.LAST_COMMIT_MESSAGE, '[upload]')"
+      uses: actions/upload-artifact@v4
+      with:
+        name: agnos-artifacts
+        path: output/ota
+        compression-level: 0

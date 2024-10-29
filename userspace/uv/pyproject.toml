@@ -1,0 +1,24 @@
+[project]
+name = "agnos"
+version = "0.1.0"
+authors = [{name = "Vehicle Researcher", email = "user@comma.ai"}]
+requires-python = "~=3.11"
+description = ""
+dependencies = [
+  "openpilot",
+  "openpilot[dev]",
+  "openpilot[testing]",
+
+  # hardware.py
+  "dbus-python",
+  # phantom_touch_logger.py
+  "evdev",
+  # amplifier.py
+  "smbus2",
+
+  # tinygrad
+  "pyopencl == 2024.1",  # pinned until cmake update coming with 24.04
+]
+
+[tool.uv.sources]
+openpilot = { path = "openpilot" }

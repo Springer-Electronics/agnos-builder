@@ -2,7 +2,8 @@
 
 # for all the non-essential nice to haves
 
-apt-get update && apt-get install -y --no-install-recommends \
+apt-fast update && apt-fast install -y --no-install-recommends \
+  bash-completion \
   irqtop \
   ripgrep \
   nfs-common
