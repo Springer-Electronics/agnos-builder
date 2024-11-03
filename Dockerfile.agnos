@@ -243,8 +243,8 @@ RUN cd /usr/lib/gcc/arm-none-eabi/* && \
 RUN ldconfig
 
 # Setup RO rootfs
+RUN mkdir -p /tmprw
 RUN mkdir -p /tmptmp
-COPY ./userspace/files/comma.conf /usr/lib/tmpfiles.d/
 COPY ./userspace/readonly_setup.sh /tmptmp/readonly_setup.sh
 RUN /tmptmp/readonly_setup.sh && rm -rf /tmptmp
 
